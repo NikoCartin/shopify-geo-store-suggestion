@@ -1,0 +1,29 @@
+{%- comment -%} Links to the other regional stores. Edit the regions list and hreflang values. ?region=chosen tells the destination store not to suggest switching back. {%- endcomment -%}
+{%- assign current_host = request.host | remove: 'www.' -%}
+<nav class="footer-regions site-footer__bottom-block" aria-label="Choose your region">
+  <span class="footer-regions__label">Region:</span>
+  <ul class="footer-regions__list">
+    {%- assign regions = 'example.com|United States,example.ca|Canada,example.co.uk|United Kingdom,example.de|Deutschland,example.fr|France' | split: ',' -%}
+    {%- for r in regions -%}
+      {%- assign parts = r | split: '|' -%}
+      {%- assign is_current = false -%}
+      {%- if parts[0] == current_host -%}{%- assign is_current = true -%}{%- endif -%}
+      {%- if forloop.first and current_host contains 'myshopify.com' -%}{%- assign is_current = true -%}{%- endif -%}
+      <li>
+        {%- if is_current -%}
+          <span aria-current="true">{{ parts[1] }}</span>
+        {%- else -%}
+          <a href="https://{{ parts[0] }}/?region=chosen" hreflang="{% case parts[0] %}{% when 'example.ca' %}en-CA{% when 'example.co.uk' %}en-GB{% when 'example.de' %}de-DE{% when 'example.fr' %}fr-FR{% else %}en-US{% endcase %}">{{ parts[1] }}</a>
+        {%- endif -%}
+      </li>
+    {%- endfor -%}
+  </ul>
+</nav>
+<style>
+  .footer-regions{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:center;gap:4px 12px;font-size:13px;line-height:1.6;margin:0 0 16px;width:100%}
+  .footer-regions__label{margin:0;padding:0;font-size:13px;line-height:1.6}
+  .footer-regions__list{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:center;gap:2px 16px;list-style:none;margin:0;padding:0}
+  .footer-regions__list li{margin:0;padding:0;line-height:1.6}
+  .footer-regions a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+  .footer-regions [aria-current]{font-weight:700}
+</style>

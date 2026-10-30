@@ -1,0 +1,231 @@
+{%- comment -%}
+  Geo store suggestion for multi-store Shopify setups.
+  - Detects the visitor's country with Shopify's same-origin /browsing_context_suggestions.json.
+  - Suggests the matching regional store in a centered, accessible dialog. It never redirects.
+  - Links to the same product, collection or page on the target store only if it exists there,
+    otherwise to the target home page.
+  - Remembers the visitor's choice for 14 days, in localStorage only when preferences consent is
+    granted (OneTrust Functional C0003 or Shopify Customer Privacy); otherwise in sessionStorage.
+    No cookies are set.
+  - QA: ?geo_test=CA simulates a visitor country; ?geo_reset=1 clears the saved choice.
+  Configure STORES, COUNTRY_TO_STORE, STORE_FLAG and PAUSE_SELECTORS below.
+{%- endcomment -%}
+<style>
+  .geo-suggest{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(5,15,25,.6)}
+  .geo-suggest__card{position:relative;width:100%;max-width:440px;background:#fff;color:#0b1f2e;border-radius:16px;padding:36px 28px 28px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3);font-size:16px;line-height:1.45}
+  .geo-suggest__title{margin:0 0 8px;font-size:22px;line-height:1.25;font-weight:700;color:#0b1f2e;text-transform:none;letter-spacing:0}
+  .geo-suggest__text{margin:0 0 24px;color:#3a4a57}
+  .geo-suggest__actions{display:flex;flex-direction:column;gap:10px}
+  .geo-suggest__btn{display:block;width:100%;padding:13px 18px;border-radius:28px;font-weight:700;font-size:16px;line-height:1.2;text-decoration:none;cursor:pointer;border:2px solid #016a93;box-sizing:border-box}
+  .geo-suggest__btn--go{background:#016a93;border-color:#016a93;color:#fff}
+  .geo-suggest a.geo-suggest__btn--go,.geo-suggest a.geo-suggest__btn--go:visited,.geo-suggest a.geo-suggest__btn--go:focus,.geo-suggest a.geo-suggest__btn--go:hover{color:#fff;text-decoration:none}
+  .geo-suggest__btn--go:hover{background:#01557a;border-color:#01557a}
+  .geo-suggest__btn--stay{background:#fff;color:#0b1f2e}
+  .geo-suggest__btn--stay:hover{background:#f0f6f9}
+  .geo-suggest__btn:focus-visible,.geo-suggest__close:focus-visible{outline:3px solid #0b1f2e;outline-offset:2px}
+  .geo-suggest__close{position:absolute;top:8px;right:8px;width:40px;height:40px;background:none;border:0;color:#0b1f2e;font-size:26px;line-height:1;cursor:pointer;border-radius:50%}
+  .geo-suggest__close:hover{background:#f0f2f4}
+  .geo-suggest__btn{display:flex;align-items:center;justify-content:center;gap:10px}
+  .geo-suggest__flag{display:inline-flex;flex:none;line-height:0;border-radius:3px;overflow:hidden;box-shadow:0 0 0 1px rgba(11,31,46,.18)}
+  .geo-suggest__flag svg{display:block;height:16px;width:auto}
+  .geo-suggest__flag--lg{margin:0 auto 14px;border-radius:6px}
+  .geo-suggest__flag--lg svg{height:40px}
+  html.geo-suggest-open,html.geo-suggest-open body{overflow:hidden}
+  /* Pause promotional popups while the store choice is open (add your app's selectors). */
+  html.geo-suggest-open .geo-suggest-pause{visibility:hidden!important}
+</style>
+<script>
+  (function () {
+    try {
+      if (window.Shopify && window.Shopify.designMode) return;
+      if (/\/admin|\/checkouts?\//.test(location.pathname)) return;
+
+      var params = new URLSearchParams(location.search);
+      var testCountry = (params.get('geo_test') || '').toUpperCase();
+      var ua = navigator.userAgent || '';
+      if (!testCountry && (/bot|crawl|spider|slurp|lighthouse|headless|preview|facebookexternalhit|bingpreview/i.test(ua) || navigator.webdriver)) return;
+
+      // CONFIGURATION: one entry per regional store.
+      var STORES = {
+        US: { host: 'example.com', name: 'Example US', country: 'the United States' },
+        CA: { host: 'example.ca', name: 'Example Canada', country: 'Canada' },
+        UK: { host: 'example.co.uk', name: 'Example UK', country: 'the United Kingdom' },
+        DE: { host: 'example.de', name: 'Example Germany', country: 'Germany' },
+        FR: { host: 'example.fr', name: 'Example France', country: 'France' }
+      };
+      // Visitor country (ISO 3166-1 alpha-2) to store key. Unlisted countries see no suggestion.
+      var COUNTRY_TO_STORE = { US: 'US', CA: 'CA', GB: 'UK', IE: 'UK', DE: 'DE', FR: 'FR' };
+      // Selectors of promotional popups to hide while the dialog is open.
+      var PAUSE_SELECTORS = [];
+      var COUNTRY_NAMES = { US: 'the United States', CA: 'Canada', GB: 'the United Kingdom', IE: 'Ireland', DE: 'Germany', FR: 'France' };
+
+      // Inline SVG flags (decorative, hidden from screen readers). Store keys map to their country flag.
+      var FLAGS = {"US":"<svg viewBox=\"0 0 7410 3900\"><rect width=\"7410\" height=\"3900\" fill=\"#b22234\"/><path d=\"M0 450H7410M0 1050H7410M0 1650H7410M0 2250H7410M0 2850H7410M0 3450H7410\" stroke=\"#fff\" stroke-width=\"300\"/><rect width=\"2964\" height=\"2100\" fill=\"#3c3b6e\"/><g fill=\"#fff\"><circle cx=\"247\" cy=\"210\" r=\"90\"/><circle cx=\"741\" cy=\"210\" r=\"90\"/><circle cx=\"1235\" cy=\"210\" r=\"90\"/><circle cx=\"1729\" cy=\"210\" r=\"90\"/><circle cx=\"2223\" cy=\"210\" r=\"90\"/><circle cx=\"2717\" cy=\"210\" r=\"90\"/><circle cx=\"494\" cy=\"420\" r=\"90\"/><circle cx=\"988\" cy=\"420\" r=\"90\"/><circle cx=\"1482\" cy=\"420\" r=\"90\"/><circle cx=\"1976\" cy=\"420\" r=\"90\"/><circle cx=\"2470\" cy=\"420\" r=\"90\"/><circle cx=\"247\" cy=\"630\" r=\"90\"/><circle cx=\"741\" cy=\"630\" r=\"90\"/><circle cx=\"1235\" cy=\"630\" r=\"90\"/><circle cx=\"1729\" cy=\"630\" r=\"90\"/><circle cx=\"2223\" cy=\"630\" r=\"90\"/><circle cx=\"2717\" cy=\"630\" r=\"90\"/><circle cx=\"494\" cy=\"840\" r=\"90\"/><circle cx=\"988\" cy=\"840\" r=\"90\"/><circle cx=\"1482\" cy=\"840\" r=\"90\"/><circle cx=\"1976\" cy=\"840\" r=\"90\"/><circle cx=\"2470\" cy=\"840\" r=\"90\"/><circle cx=\"247\" cy=\"1050\" r=\"90\"/><circle cx=\"741\" cy=\"1050\" r=\"90\"/><circle cx=\"1235\" cy=\"1050\" r=\"90\"/><circle cx=\"1729\" cy=\"1050\" r=\"90\"/><circle cx=\"2223\" cy=\"1050\" r=\"90\"/><circle cx=\"2717\" cy=\"1050\" r=\"90\"/><circle cx=\"494\" cy=\"1260\" r=\"90\"/><circle cx=\"988\" cy=\"1260\" r=\"90\"/><circle cx=\"1482\" cy=\"1260\" r=\"90\"/><circle cx=\"1976\" cy=\"1260\" r=\"90\"/><circle cx=\"2470\" cy=\"1260\" r=\"90\"/><circle cx=\"247\" cy=\"1470\" r=\"90\"/><circle cx=\"741\" cy=\"1470\" r=\"90\"/><circle cx=\"1235\" cy=\"1470\" r=\"90\"/><circle cx=\"1729\" cy=\"1470\" r=\"90\"/><circle cx=\"2223\" cy=\"1470\" r=\"90\"/><circle cx=\"2717\" cy=\"1470\" r=\"90\"/><circle cx=\"494\" cy=\"1680\" r=\"90\"/><circle cx=\"988\" cy=\"1680\" r=\"90\"/><circle cx=\"1482\" cy=\"1680\" r=\"90\"/><circle cx=\"1976\" cy=\"1680\" r=\"90\"/><circle cx=\"2470\" cy=\"1680\" r=\"90\"/><circle cx=\"247\" cy=\"1890\" r=\"90\"/><circle cx=\"741\" cy=\"1890\" r=\"90\"/><circle cx=\"1235\" cy=\"1890\" r=\"90\"/><circle cx=\"1729\" cy=\"1890\" r=\"90\"/><circle cx=\"2223\" cy=\"1890\" r=\"90\"/><circle cx=\"2717\" cy=\"1890\" r=\"90\"/></g></svg>","CA":"<svg viewBox=\"0 0 9600 4800\"><path fill=\"#d52b1e\" d=\"M0 0h2400l99 99h4602l99-99h2400v4800h-2400l-99-99h-4602l-99 99H0z\"/><path fill=\"#fff\" d=\"M2400 0h4800v4800H2400z\"/><path fill=\"#d52b1e\" d=\"m4890 4430-45-863a95 95 0 0 1 111-98l859 151-116-320a65 65 0 0 1 20-73l941-762-212-99a65 65 0 0 1-34-79l186-572-542 115a65 65 0 0 1-73-38l-105-247-423 454a65 65 0 0 1-111-57l204-1052-327 189a65 65 0 0 1-91-27l-332-652-332 652a65 65 0 0 1-91 27l-327-189 204 1052a65 65 0 0 1-111 57l-423-454-105 247a65 65 0 0 1-73 38l-542-115 186 572a65 65 0 0 1-34 79l-212 99 941 762a65 65 0 0 1 20 73l-116 320 859-151a95 95 0 0 1 111 98l-45 863z\"/></svg>","GB":"<svg viewBox=\"0 0 60 30\"><clipPath id=\"gfl-s\"><path d=\"M0 0v30h60V0z\"/></clipPath><clipPath id=\"gfl-t\"><path d=\"M30 15h30v15zv15H0zH0V0zV0h30z\"/></clipPath><g clip-path=\"url(#gfl-s)\"><path d=\"M0 0v30h60V0z\" fill=\"#012169\"/><path d=\"M0 0l60 30m0-30L0 30\" stroke=\"#fff\" stroke-width=\"6\"/><path d=\"M0 0l60 30m0-30L0 30\" clip-path=\"url(#gfl-t)\" stroke=\"#c8102e\" stroke-width=\"4\"/><path d=\"M30 0v30M0 15h60\" stroke=\"#fff\" stroke-width=\"10\"/><path d=\"M30 0v30M0 15h60\" stroke=\"#c8102e\" stroke-width=\"6\"/></g></svg>","IE":"<svg viewBox=\"0 0 3 2\"><path fill=\"#169b62\" d=\"M0 0h1v2H0z\"/><path fill=\"#fff\" d=\"M1 0h1v2H1z\"/><path fill=\"#ff883e\" d=\"M2 0h1v2H2z\"/></svg>","DE":"<svg viewBox=\"0 0 5 3\"><path d=\"M0 0h5v1H0z\"/><path fill=\"#d00\" d=\"M0 1h5v1H0z\"/><path fill=\"#ffce00\" d=\"M0 2h5v1H0z\"/></svg>","FR":"<svg viewBox=\"0 0 3 2\"><path fill=\"#002654\" d=\"M0 0h1v2H0z\"/><path fill=\"#fff\" d=\"M1 0h1v2H1z\"/><path fill=\"#ce1126\" d=\"M2 0h1v2H2z\"/></svg>"};
+      var STORE_FLAG = { US: 'US', CA: 'CA', UK: 'GB', DE: 'DE', FR: 'FR' };
+      function flag(code, cls) { var f = FLAGS[code]; return f ? '<span class="geo-suggest__flag ' + cls + '" aria-hidden="true">' + f.replace('<svg ', '<svg focusable="false" ') + '</span>' : ''; }
+
+      var host = location.hostname.replace(/^www\./, '');
+      var current = null;
+      for (var k in STORES) { if (STORES[k].host === host) current = k; }
+      if (!current) current = 'US'; // myshopify / preview domains: set your default store key
+
+      var KEY = 'store_choice';
+      var MAX_AGE = 14 * 24 * 60 * 60 * 1000;
+
+      function prefsAllowed() {
+        var ot = window.OnetrustActiveGroups;
+        if (typeof ot === 'string' && ot.indexOf(',C0003,') > -1) return true;
+        var cp = window.Shopify && window.Shopify.customerPrivacy;
+        if (cp && typeof cp.preferencesProcessingAllowed === 'function') {
+          try { if (cp.preferencesProcessingAllowed()) return true; } catch (e) {}
+        }
+        return false;
+      }
+      function readChoice() {
+        var raw = null;
+        try { raw = sessionStorage.getItem(KEY) || localStorage.getItem(KEY); } catch (e) {}
+        if (!raw) return null;
+        try {
+          var v = JSON.parse(raw);
+          if (!v || !v.ts || Date.now() - v.ts > MAX_AGE) return null;
+          return v;
+        } catch (e) { return null; }
+      }
+      function saveChoice(store) {
+        var v = JSON.stringify({ store: store, ts: Date.now() });
+        try {
+          sessionStorage.setItem(KEY, v);
+          if (prefsAllowed()) localStorage.setItem(KEY, v); else localStorage.removeItem(KEY);
+        } catch (e) {}
+      }
+      // Keep storage in line with consent changes (OneTrust / Shopify privacy banner).
+      function syncConsent() {
+        try {
+          var v = sessionStorage.getItem(KEY) || localStorage.getItem(KEY);
+          if (!v) return;
+          if (prefsAllowed()) localStorage.setItem(KEY, v); else localStorage.removeItem(KEY);
+        } catch (e) {}
+      }
+      window.addEventListener('OneTrustGroupsUpdated', syncConsent);
+      document.addEventListener('visitorConsentCollected', syncConsent);
+
+      if (params.get('geo_reset') === '1') {
+        try { sessionStorage.removeItem(KEY); localStorage.removeItem(KEY); } catch (e) {}
+      }
+
+      // Arrived here by choosing this store (footer region links or the banner): remember it, clean the URL.
+      if (params.get('region') === 'chosen') {
+        saveChoice(current);
+        params.delete('region');
+        var qs = params.toString();
+        history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+      }
+
+      if (readChoice()) return;
+
+      function detect() {
+        if (testCountry) return Promise.resolve(testCountry);
+        return fetch('/browsing_context_suggestions.json', { credentials: 'same-origin' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) { return d && d.detected_values && d.detected_values.country ? d.detected_values.country.handle : null; });
+      }
+
+      function targetUrl(store) {
+        var base = 'https://' + STORES[store].host;
+        var home = base + '/?region=chosen';
+        // Only products, collections and pages can be checked cross-store (via Shopify's public JSON endpoints).
+        var m = location.pathname.match(/^(?:\/[a-z]{2}(?:-[a-z]{2})?)?\/(products|collections|pages)\/([^\/?#]+)\/?$/i);
+        if (!m) return Promise.resolve(home);
+        var path = '/' + m[1] + '/' + m[2];
+        var probe = base + path + (m[1] === 'products' ? '.js' : '.json');
+        return fetch(probe, { method: 'GET', mode: 'cors', credentials: 'omit' })
+          .then(function (r) { return r.ok ? base + path + '?region=chosen' : home; })
+          .catch(function () { return home; });
+      }
+
+      function show(country, store) {
+        var s = STORES[store], here = STORES[current];
+        var where = COUNTRY_NAMES[country] || s.country;
+        var prevFocus = document.activeElement;
+        var wrap = document.createElement('div');
+        wrap.className = 'geo-suggest';
+        wrap.innerHTML =
+          '<div class="geo-suggest__card" role="dialog" aria-modal="true" aria-labelledby="geo-suggest-title" aria-describedby="geo-suggest-text">' +
+            '<button type="button" class="geo-suggest__close" aria-label="Close and stay on ' + here.name + '">\u00d7</button>' +
+            flag(country, 'geo-suggest__flag--lg') +
+            '<h2 class="geo-suggest__title" id="geo-suggest-title">Shopping from ' + where + '?</h2>' +
+            '<p class="geo-suggest__text" id="geo-suggest-text">Visit ' + s.name + ' for local pricing, delivery and support.</p>' +
+            '<div class="geo-suggest__actions">' +
+              '<a class="geo-suggest__btn geo-suggest__btn--go" href="https://' + s.host + '/?region=chosen">' + flag(STORE_FLAG[store], '') + '<span>Go to ' + s.name + '</span></a>' +
+              '<button type="button" class="geo-suggest__btn geo-suggest__btn--stay">' + flag(STORE_FLAG[current], '') + '<span>Stay on ' + here.name + '</span></button>' +
+            '</div>' +
+          '</div>';
+        function close() {
+          saveChoice(current);
+          document.removeEventListener('keydown', onKey, true);
+          document.documentElement.classList.remove('geo-suggest-open');
+          document.querySelectorAll('.geo-suggest-pause').forEach(function (el) { el.classList.remove('geo-suggest-pause'); });
+          if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+          if (prevFocus && prevFocus.focus) { try { prevFocus.focus(); } catch (e) {} }
+        }
+        function onKey(ev) {
+          if (ev.key === 'Escape') { ev.preventDefault(); close(); return; }
+          if (ev.key !== 'Tab') return;
+          var f = wrap.querySelectorAll('a[href],button');
+          var first = f[0], last = f[f.length - 1];
+          if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+          else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+          else if (!wrap.contains(document.activeElement)) { ev.preventDefault(); first.focus(); }
+        }
+        wrap.querySelector('.geo-suggest__btn--stay').addEventListener('click', close);
+        wrap.querySelector('.geo-suggest__close').addEventListener('click', close);
+        wrap.addEventListener('click', function (ev) { if (ev.target === wrap) close(); });
+        document.addEventListener('keydown', onKey, true);
+        document.body.appendChild(wrap);
+        document.documentElement.classList.add('geo-suggest-open');
+        PAUSE_SELECTORS.forEach(function (sel) { document.querySelectorAll(sel).forEach(function (el) { el.classList.add('geo-suggest-pause'); }); });
+        var go = wrap.querySelector('.geo-suggest__btn--go');
+        go.focus();
+        // Other widgets may grab focus right after load; bring it back once.
+        setTimeout(function () { if (wrap.parentNode && !wrap.contains(document.activeElement)) go.focus(); }, 350);
+        targetUrl(store).then(function (u) { go.href = u; });
+      }
+
+      // Wait until the visitor has answered the cookie banner so the two never overlap or fight for focus.
+      function consentPending() {
+        var cp = window.Shopify && window.Shopify.customerPrivacy;
+        try {
+          if (cp && cp.shouldShowBanner && cp.shouldShowBanner() && cp.currentVisitorConsent) {
+            var c = cp.currentVisitorConsent();
+            if (c && c.preferences === '' && c.analytics === '' && c.marketing === '') return true;
+          }
+        } catch (e) {}
+        var ot = document.getElementById('onetrust-banner-sdk');
+        if (ot && ot.offsetParent !== null && getComputedStyle(ot).visibility !== 'hidden') return true;
+        return false;
+      }
+      function whenConsentSettled(cb) {
+        var done = false;
+        function go() { if (done) return; done = true; setTimeout(cb, 400); }
+        var tries = 0;
+        (function check() {
+          // Give the privacy banner script up to ~3s to load before deciding.
+          var cpReady = window.Shopify && window.Shopify.customerPrivacy;
+          if (!cpReady && tries++ < 15) return setTimeout(check, 200);
+          if (!consentPending()) return go();
+          document.addEventListener('visitorConsentCollected', go);
+          window.addEventListener('OneTrustGroupsUpdated', function () { if (!consentPending()) go(); });
+        })();
+      }
+      function run() {
+        detect().then(function (country) {
+          if (!country) return;
+          var store = COUNTRY_TO_STORE[country];
+          if (!store || store === current) return; // other countries: no suggestion
+          whenConsentSettled(function () { if (!readChoice()) show(country, store); });
+        }).catch(function () {});
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run); else run();
+    } catch (e) {}
+  })();
+</script>
